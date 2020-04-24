@@ -67,7 +67,7 @@ def seq2seq_sequence_loss(targets, targets_sequence_length, logits,
     padded_logits = tf.pad(logits, [[0, 0], [0, difference], [0, 0]])
     padded_logits = padded_logits[:, :batch_max_targets_sequence_length, :]
 
-    with tf.variable_scope('sequence_loss'):
+    with tf.compat.v1.variable_scope('sequence_loss'):
         sequence_loss = tf.contrib.seq2seq.sequence_loss(
             padded_logits,
             targets,
@@ -81,7 +81,7 @@ def seq2seq_sequence_loss(targets, targets_sequence_length, logits,
 
     # batch_max_seq_length = tf.shape(logits)[1]
     # unpadded_targets = targets[:, :tf.shape(logits)[1]]
-    # with tf.variable_scope('sequence_loss'):
+    # with tf.compat.v1.variable_scope('sequence_loss'):
     #     sequence_loss = tf.contrib.seq2seq.sequence_loss(
     #         logits,
     #         unpadded_targets,
@@ -106,7 +106,7 @@ def cross_entropy_sequence_loss(logits, targets, sequence_length):
     Returns:
       A tensor of shape [T, B] that contains the loss per example, per time step.
     """
-    with tf.variable_scope('sequence_loss'):
+    with tf.compat.v1.variable_scope('sequence_loss'):
         losses = tf.nn.sparse_softmax_cross_entropy_with_logits(
             logits=logits, labels=targets)
         # Mask out the losses we don't care about
@@ -121,46 +121,8 @@ def cross_entropy_sequence_loss(logits, targets, sequence_length):
 def sampled_softmax_cross_entropy(output_placeholder, feature_hidden, logits,
                                   vector_labels, class_weights,
                                   class_biases, loss, num_classes):
-    output_exp = tf.cast(tf.expand_dims(output_placeholder, -1), tf.int64)
-    if loss['sampler'] == 'fixed_unigram':
-        sampled_values = tf.nn.fixed_unigram_candidate_sampler(
-            true_classes=output_exp,
-            num_true=1,
-            num_sampled=loss['negative_samples'],
-            unique=loss['unique'],
-            range_max=num_classes,
-            unigrams=loss['class_counts'],
-            distortion=loss['distortion']
-        )
-    elif loss['sampler'] == 'uniform':
-        sampled_values = tf.nn.uniform_candidate_sampler(
-            true_classes=output_exp,
-            num_true=1,
-            num_sampled=loss['negative_samples'],
-            unique=loss['unique'],
-            range_max=num_classes
-        )
-    elif loss['sampler'] == 'log_uniform':
-        sampled_values = tf.nn.log_uniform_candidate_sampler(
-            true_classes=output_exp,
-            num_true=1,
-            num_sampled=loss['negative_samples'],
-            unique=loss['unique'],
-            range_max=num_classes
-        )
-    elif loss['sampler'] == 'learned_unigram':
-        sampled_values = tf.nn.fixed_unigram_candidate_sampler(
-            true_classes=output_exp,
-            num_true=1,
-            num_sampled=loss['negative_samples'],
-            unique=loss['unique'],
-            range_max=num_classes,
-            unigrams=loss['class_counts'],
-            distortion=loss['distortion']
-        )
-    else:
-        raise ValueError('Unsupported sampler {}'.format(loss['sampler']))
-
+    output_exp = tf.cast(tf.expand_dims(output_placeholder, -1), tf.int64)    
+    sampled_values = obtained_sampled_values(num_classes, output_exp, loss)
     train_loss = tf.nn.sampled_softmax_loss(weights=tf.transpose(class_weights),
                                             biases=class_biases,
                                             labels=output_exp,
@@ -198,45 +160,7 @@ def sequence_sampled_softmax_cross_entropy(targets, targets_sequence_length,
     # unpadded_targets = targets[:, :batch_max_seq_length]
     # output_exp = tf.cast(tf.reshape(unpadded_targets, [-1, 1]), tf.int64)
     output_exp = tf.cast(tf.reshape(targets, [-1, 1]), tf.int64)
-
-    if loss['sampler'] == 'fixed_unigram':
-        sampled_values = tf.nn.fixed_unigram_candidate_sampler(
-            true_classes=output_exp,
-            num_true=1,
-            num_sampled=loss['negative_samples'],
-            unique=loss['unique'],
-            range_max=num_classes,
-            unigrams=loss['class_counts'],
-            distortion=loss['distortion']
-        )
-    elif loss['sampler'] == 'uniform':
-        sampled_values = tf.nn.uniform_candidate_sampler(
-            true_classes=output_exp,
-            num_true=1,
-            num_sampled=loss['negative_samples'],
-            unique=loss['unique'],
-            range_max=num_classes
-        )
-    elif loss['sampler'] == 'log_uniform':
-        sampled_values = tf.nn.log_uniform_candidate_sampler(
-            true_classes=output_exp,
-            num_true=1,
-            num_sampled=loss['negative_samples'],
-            unique=loss['unique'],
-            range_max=num_classes
-        )
-    elif loss['sampler'] == 'learned_unigram':
-        sampled_values = tf.nn.fixed_unigram_candidate_sampler(
-            true_classes=output_exp,
-            num_true=1,
-            num_sampled=loss['negative_samples'],
-            unique=loss['unique'],
-            range_max=num_classes,
-            unigrams=loss['class_counts'],
-            distortion=loss['distortion']
-        )
-    else:
-        raise ValueError('Unsupported sampler {}'.format(loss['sampler']))
+    sampled_values = obtained_sampled_values(num_classes, output_exp, loss)
 
     def _sampled_loss(labels, logits):
         labels = tf.cast(labels, tf.int64)
@@ -288,7 +212,7 @@ def weighted_softmax_cross_entropy(logits, vector_labels, loss):
             loss['labels_smoothing']
         )
     else:
-        train_loss = tf.losses.softmax_cross_entropy(
+        train_loss = tf.compat.v1.losses.softmax_cross_entropy(
             onehot_labels=vector_labels,
             logits=logits,
             label_smoothing=loss[
@@ -324,3 +248,47 @@ regularizer_registry = {'l1': tf.contrib.layers.l1_regularizer,
                         'sum': tf.contrib.layers.sum_regularizer,
                         'None': lambda x: None,
                         None: lambda x: None}
+
+
+
+def obtained_sampled_values(num_classes, output_exp, loss):
+    """returns sampled_values using the chosen sampler"""
+    if loss['sampler'] == 'fixed_unigram':
+        sampled_values = tf.nn.fixed_unigram_candidate_sampler(
+            true_classes=output_exp,
+            num_true=1,
+            num_sampled=loss['negative_samples'],
+            unique=loss['unique'],
+            range_max=num_classes,
+            unigrams=loss['class_counts'],
+            distortion=loss['distortion']
+        )
+    elif loss['sampler'] == 'uniform':
+        sampled_values = tf.nn.uniform_candidate_sampler(
+            true_classes=output_exp,
+            num_true=1,
+            num_sampled=loss['negative_samples'],
+            unique=loss['unique'],
+            range_max=num_classes
+        )
+    elif loss['sampler'] == 'log_uniform':
+        sampled_values = tf.nn.log_uniform_candidate_sampler(
+            true_classes=output_exp,
+            num_true=1,
+            num_sampled=loss['negative_samples'],
+            unique=loss['unique'],
+            range_max=num_classes
+        )
+    elif loss['sampler'] == 'learned_unigram':
+        sampled_values = tf.nn.fixed_unigram_candidate_sampler(
+            true_classes=output_exp,
+            num_true=1,
+            num_sampled=loss['negative_samples'],
+            unique=loss['unique'],
+            range_max=num_classes,
+            unigrams=loss['class_counts'],
+            distortion=loss['distortion']
+        )
+    else:
+        raise ValueError('Unsupported sampler {}'.format(loss['sampler']))
+    return sampled_values

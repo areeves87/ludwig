@@ -16,9 +16,9 @@
 # ==============================================================================
 import logging
 import os
+import sys
 
 import numpy as np
-import soundfile
 import tensorflow as tf
 
 from ludwig.constants import AUDIO, BACKFILL
@@ -26,6 +26,7 @@ from ludwig.features.base_feature import BaseFeature
 from ludwig.features.sequence_feature import SequenceInputFeature
 from ludwig.utils.audio_utils import calculate_incr_mean
 from ludwig.utils.audio_utils import calculate_incr_var
+from ludwig.utils.audio_utils import get_fbank
 from ludwig.utils.audio_utils import get_group_delay
 from ludwig.utils.audio_utils import get_length_in_samp
 from ludwig.utils.audio_utils import get_max_length_stft_based
@@ -34,6 +35,7 @@ from ludwig.utils.audio_utils import get_phase_stft_magnitude
 from ludwig.utils.audio_utils import get_stft_magnitude
 from ludwig.utils.data_utils import get_abs_path
 from ludwig.utils.misc import set_default_value
+from ludwig.utils.misc import set_default_values
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,16 @@ class AudioBaseFeature(BaseFeature):
 
     @staticmethod
     def get_feature_meta(column, preprocessing_parameters):
+        try:
+            import soundfile
+        except ImportError:
+            logger.error(
+                ' soundfile is not installed. '
+                'In order to install all audio feature dependencies run '
+                'pip install ludwig[audio]'
+            )
+            sys.exit(-1)
+
         audio_feature_dict = preprocessing_parameters['audio_feature']
         first_audio_file_path = column[0]
         _, sampling_rate_in_hz = soundfile.read(first_audio_file_path)
@@ -87,6 +99,8 @@ class AudioBaseFeature(BaseFeature):
             feature_dim_symmetric = get_length_in_samp(
                 audio_feature_dict['window_length_in_s'], sampling_rate_in_hz)
             feature_dim = get_non_symmetric_length(feature_dim_symmetric)
+        elif feature_type == 'fbank':
+            feature_dim = audio_feature_dict['num_filter_bands']
         else:
             raise ValueError('{} is not recognized.'.format(feature_type))
 
@@ -103,6 +117,15 @@ class AudioBaseFeature(BaseFeature):
         :param feature_dim: dimension of each feature frame
         :param max_length: max audio length defined by user in samples
         """
+        try:
+            import soundfile
+        except ImportError:
+            logger.error(
+                ' soundfile is not installed. '
+                'In order to install all audio feature dependencies run '
+                'pip install ludwig[audio]'
+            )
+            sys.exit(-1)
 
         feature_type = audio_feature_dict['type']
         audio, sampling_rate_in_hz = soundfile.read(filepath)
@@ -110,7 +133,7 @@ class AudioBaseFeature(BaseFeature):
 
         if feature_type == 'raw':
             audio_feature = np.expand_dims(audio, axis=-1)
-        elif feature_type in ['stft', 'stft_phase', 'group_delay']:
+        elif feature_type in ['stft', 'stft_phase', 'group_delay', 'fbank']:
             audio_feature = np.transpose(
                 AudioBaseFeature._get_2D_feature(audio, feature_type,
                                                  audio_feature_dict,
@@ -118,20 +141,20 @@ class AudioBaseFeature(BaseFeature):
         else:
             raise ValueError('{} is not recognized.'.format(feature_type))
 
+        if normalization_type == 'per_file':
+            mean = np.mean(audio_feature, axis=0)
+            std = np.std(audio_feature, axis=0)
+            audio_feature = np.divide((audio_feature - mean),
+                                      std + 1.0e-10)
+        elif normalization_type == 'global':
+            raise ValueError('not implemented yet')
+
         feature_length = audio_feature.shape[0]
         broadcast_feature_length = min(feature_length, max_length)
         audio_feature_padded = np.full((max_length, feature_dim), padding_value,
                                        dtype=np.float32)
         audio_feature_padded[:broadcast_feature_length, :] = audio_feature[
                                                              :max_length, :]
-
-        if normalization_type == 'per_file':
-            mean = np.mean(audio_feature, axis=0)
-            std = np.std(audio_feature, axis=0)
-            audio_feature_padded = np.divide((audio_feature - mean),
-                                             std)
-        elif normalization_type == 'global':
-            raise ValueError('not implemented yet')
 
         return audio_feature_padded
 
@@ -157,12 +180,19 @@ class AudioBaseFeature(BaseFeature):
                         sampling_rate_in_hz):
         window_length_in_s = audio_feature_dict['window_length_in_s']
         window_shift_in_s = audio_feature_dict['window_shift_in_s']
+        window_length_in_samp = get_length_in_samp(window_length_in_s,
+                                                   sampling_rate_in_hz)
 
         if 'num_fft_points' in audio_feature_dict:
             num_fft_points = audio_feature_dict['num_fft_points']
+            if num_fft_points < window_length_in_samp:
+                raise ValueError(
+                    'num_fft_points: {} < window length in '
+                    'samples: {} (corresponds to window length'
+                    ' in s: {}'.format(num_fft_points, window_length_in_s,
+                                       window_length_in_samp))
         else:
-            num_fft_points = get_length_in_samp(window_length_in_s,
-                                                sampling_rate_in_hz)
+            num_fft_points = window_length_in_samp
 
         if 'window_type' in audio_feature_dict:
             window_type = audio_feature_dict['window_type']
@@ -182,6 +212,11 @@ class AudioBaseFeature(BaseFeature):
             return get_group_delay(audio, sampling_rate_in_hz,
                                    window_length_in_s, window_shift_in_s,
                                    num_fft_points, window_type)
+        if feature_type == 'fbank':
+            num_filter_bands = audio_feature_dict['num_filter_bands']
+            return get_fbank(audio, sampling_rate_in_hz,
+                             window_length_in_s, window_shift_in_s,
+                             num_fft_points, window_type, num_filter_bands)
 
     @staticmethod
     def add_feature_data(
@@ -260,7 +295,7 @@ class AudioBaseFeature(BaseFeature):
             audio_stats['std'] = np.sqrt(
                 audio_stats['var'] / float(audio_stats['count']))
             print_statistics = """
-            {} audio files loaded. 
+            {} audio files loaded.
             Statistics of audio file lengths:
             - mean: {:.4f}
             - std: {:.4f}
@@ -295,7 +330,7 @@ class AudioBaseFeature(BaseFeature):
 
         if feature_type == 'raw':
             return audio_length_limit_in_samp
-        elif feature_type in ['stft', 'stft_phase', 'group_delay']:
+        elif feature_type in ['stft', 'stft_phase', 'group_delay', 'fbank']:
             window_length_in_s = audio_feature_dict['window_length_in_s']
             window_shift_in_s = audio_feature_dict['window_shift_in_s']
             return get_max_length_stft_based(audio_length_limit_in_samp,
@@ -323,7 +358,7 @@ class AudioInputFeature(AudioBaseFeature, SequenceInputFeature):
                 'check "update_model_definition_with_metadata()"')
 
     def _get_input_placeholder(self):
-        return tf.placeholder(
+        return tf.compat.v1.placeholder(
             tf.float32, shape=[None, self.length, self.embedding_size],
             name='{}_placeholder'.format(self.name)
         )
@@ -359,5 +394,10 @@ class AudioInputFeature(AudioBaseFeature, SequenceInputFeature):
 
     @staticmethod
     def populate_defaults(input_feature):
-        set_default_value(input_feature, 'tied_weights', None)
-        set_default_value(input_feature, 'preprocessing', {})
+        set_default_values(
+            input_feature,
+            {
+                'tied_weights': None,
+                'preprocessing': {}
+            }
+        )

@@ -25,6 +25,7 @@ import sys
 from collections import OrderedDict
 from pprint import pformat
 
+from ludwig.constants import TEST, TRAINING, VALIDATION, FULL
 from ludwig.contrib import contrib_command
 from ludwig.data.postprocessing import postprocess
 from ludwig.data.preprocessing import preprocess_for_prediction
@@ -34,11 +35,11 @@ from ludwig.globals import TRAIN_SET_METADATA_FILE_NAME
 from ludwig.models.model import load_model_and_definition
 from ludwig.utils.data_utils import save_csv
 from ludwig.utils.data_utils import save_json
-from ludwig.utils.misc import get_from_registry
+from ludwig.utils.misc import get_from_registry, \
+    find_non_existing_dir_by_adding_suffix
 from ludwig.utils.print_utils import logging_level_registry, repr_ordered_dict
 from ludwig.utils.print_utils import print_boxed
 from ludwig.utils.print_utils import print_ludwig
-
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +48,11 @@ def full_predict(
         model_path,
         data_csv=None,
         data_hdf5=None,
-        split='test',
+        split=TEST,
         batch_size=128,
         skip_save_unprocessed_output=False,
+        skip_save_test_predictions=False,
+        skip_save_test_statistics=False,
         output_directory='results',
         evaluate_performance=True,
         gpus=None,
@@ -58,18 +61,10 @@ def full_predict(
         debug=False,
         **kwargs
 ):
-    # setup directories and file names
-    experiment_dir_name = output_directory
-    suffix = 0
-    while os.path.exists(experiment_dir_name):
-        experiment_dir_name = output_directory + '_' + str(suffix)
-        suffix += 1
-
     if is_on_master():
         logger.info('Dataset path: {}'.format(
             data_csv if data_csv is not None else data_hdf5))
         logger.info('Model path: {}'.format(model_path))
-        logger.info('Output path: {}'.format(experiment_dir_name))
         logger.info('')
 
     train_set_metadata_json_fp = os.path.join(
@@ -107,7 +102,18 @@ def full_predict(
     model.close_session()
 
     if is_on_master():
-        os.mkdir(experiment_dir_name)
+        # setup directories and file names
+        experiment_dir_name = find_non_existing_dir_by_adding_suffix(output_directory)
+
+        # if we are skipping all saving,
+        # there is no need to create a directory that will remain empty
+        should_create_exp_dir = not (
+                skip_save_unprocessed_output and
+                skip_save_test_predictions and
+                skip_save_test_statistics
+        )
+        if should_create_exp_dir:
+                os.makedirs(experiment_dir_name)
 
         # postprocess
         postprocessed_output = postprocess(
@@ -118,11 +124,13 @@ def full_predict(
             skip_save_unprocessed_output or not is_on_master()
         )
 
-        save_prediction_outputs(postprocessed_output, experiment_dir_name)
+        if not skip_save_test_predictions:
+            save_prediction_outputs(postprocessed_output, experiment_dir_name)
 
         if evaluate_performance:
             print_test_results(prediction_results)
-            save_test_statistics(prediction_results, experiment_dir_name)
+            if not skip_save_test_statistics:
+                save_test_statistics(prediction_results, experiment_dir_name)
 
         logger.info('Saved to: {0}'.format(experiment_dir_name))
 
@@ -208,7 +216,10 @@ def save_prediction_outputs(
     for output_field, outputs in postprocessed_output.items():
         for output_type, values in outputs.items():
             if output_type not in skip_output_types:
-                save_csv(csv_filename.format(output_field, output_type), values)
+                save_csv(
+                    csv_filename.format(output_field, output_type),
+                    values
+                )
 
 
 def save_test_statistics(test_stats, experiment_dir_name):
@@ -242,7 +253,7 @@ def print_test_results(test_stats):
 def cli(sys_argv):
     parser = argparse.ArgumentParser(
         description='This script loads a pretrained model '
-                    'and uses it to predict.',
+                    'and uses it to predict',
         prog='ludwig predict',
         usage='%(prog)s [options]'
     )
@@ -275,8 +286,8 @@ def cli(sys_argv):
     parser.add_argument(
         '-s',
         '--split',
-        default='test',
-        choices=['training', 'validation', 'test', 'full'],
+        default=TEST,
+        choices=[TRAINING, VALIDATION, TEST, FULL],
         help='the split to test the model on'
     )
 
@@ -306,6 +317,19 @@ def cli(sys_argv):
         help='skips saving intermediate NPY output files',
         action='store_true', default=False
     )
+    parser.add_argument(
+        '-sstp',
+        '--skip_save_test_predictions',
+        help='skips saving test predictions CSV files',
+        action='store_true', default=False
+    )
+    parser.add_argument(
+        '-sstes',
+        '--skip_save_test_statistics',
+        help='skips saving test statistics JSON file',
+        action='store_true', default=False
+    )
+
 
     # ------------------
     # Generic parameters
@@ -363,6 +387,9 @@ def cli(sys_argv):
     logging.getLogger('ludwig').setLevel(
         logging_level_registry[args.logging_level]
     )
+    global logger
+    logger = logging.getLogger('ludwig.predict')
+
     set_on_master(args.use_horovod)
 
     if is_on_master():

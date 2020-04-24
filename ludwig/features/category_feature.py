@@ -36,9 +36,9 @@ from ludwig.utils.math_utils import int_type
 from ludwig.utils.math_utils import softmax
 from ludwig.utils.metrics_utils import ConfusionMatrix
 from ludwig.utils.misc import set_default_value
+from ludwig.utils.misc import set_default_values
 from ludwig.utils.strings_utils import UNKNOWN_SYMBOL
 from ludwig.utils.strings_utils import create_vocabulary
-
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +136,7 @@ class CategoryInputFeature(CategoryBaseFeature, InputFeature):
         input_feature['vocab'] = feature_metadata['idx2str']
 
     def _get_input_placeholder(self):
-        return tf.placeholder(
+        return tf.compat.v1.placeholder(
             tf.int32,
             shape=[None],  # None is for dealing with variable batch size
             name='{}_placeholder'.format(self.name)
@@ -224,7 +224,7 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
     ])
 
     def _get_output_placeholder(self):
-        return tf.placeholder(
+        return tf.compat.v1.placeholder(
             tf.int64,
             [None],  # None is for dealing with variable batch size
             name='{}_placeholder'.format(self.name)
@@ -239,16 +239,16 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
         if not self.regularize:
             regularizer = None
 
-        with tf.variable_scope('predictions_{}'.format(self.name)):
+        with tf.compat.v1.variable_scope('predictions_{}'.format(self.name)):
             initializer_obj = get_initializer(self.initializer)
-            weights = tf.get_variable(
+            weights = tf.compat.v1.get_variable(
                 'weights',
                 initializer=initializer_obj([hidden_size, self.num_classes]),
                 regularizer=regularizer
             )
             logger.debug('  class_weights: {0}'.format(weights))
 
-            biases = tf.get_variable(
+            biases = tf.compat.v1.get_variable(
                 'biases',
                 [self.num_classes]
             )
@@ -293,7 +293,7 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
             class_weights,
             class_biases
     ):
-        with tf.variable_scope('loss_{}'.format(self.name)):
+        with tf.compat.v1.variable_scope('loss_{}'.format(self.name)):
             if ('class_similarities' in self.loss and
                     self.loss['class_similarities'] is not None):
 
@@ -342,7 +342,7 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
                     name='vector_labels_{}'.format(self.name)
                 )
 
-            if self.loss['type'] == 'sampled_softmax_cross_entropy':
+            if self.loss['type'] == SAMPLED_SOFTMAX_CROSS_ENTROPY:
                 train_loss, eval_loss = sampled_softmax_cross_entropy(
                     targets,
                     hidden,
@@ -353,7 +353,7 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
                     self.loss,
                     self.num_classes
                 )
-            elif self.loss['type'] == 'softmax_cross_entropy':
+            elif self.loss['type'] == SOFTMAX_CROSS_ENTROPY:
                 train_loss = weighted_softmax_cross_entropy(
                     logits,
                     vector_labels,
@@ -388,7 +388,7 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
         return train_mean_loss, eval_loss
 
     def _get_measures(self, targets, predictions, logits):
-        with tf.variable_scope('measures_{}'.format(self.name)):
+        with tf.compat.v1.variable_scope('measures_{}'.format(self.name)):
             accuracy_val, correct_predictions = get_accuracy(
                 targets,
                 predictions,
@@ -408,6 +408,8 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
             hidden,
             hidden_size,
             regularizer=None,
+            dropout_rate=None,
+            is_training=None,
             **kwargs
     ):
         output_tensors = {}
@@ -448,16 +450,16 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
         output_tensors[MEAN_HITS_AT_K + '_' + self.name] = mean_hits_at_k
 
         if 'sampled' not in self.loss['type']:
-            tf.summary.scalar(
-                'train_batch_accuracy_{}'.format(self.name),
+            tf.compat.v1.summary.scalar(
+                'batch_train_mean_accuracy_{}'.format(self.name),
                 accuracy
             )
-            tf.summary.scalar(
-                'train_batch_mean_hits_at_k_{}'.format(self.name),
+            tf.compat.v1.summary.scalar(
+                'batch_train_mean_hits_at_k_{}'.format(self.name),
                 mean_hits_at_k
             )
 
-        # ================ Loss (Cross Entropy) ================
+        # ================ Loss ================
         train_mean_loss, eval_loss = self._get_loss(
             targets,
             hidden,
@@ -470,8 +472,8 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
         output_tensors[EVAL_LOSS + '_' + self.name] = eval_loss
         output_tensors[TRAIN_MEAN_LOSS + '_' + self.name] = train_mean_loss
 
-        tf.summary.scalar(
-            'train_mean_loss_{}'.format(self.name),
+        tf.compat.v1.summary.scalar(
+            'batch_train_mean_loss_{}'.format(self.name),
             train_mean_loss
         )
 
@@ -504,6 +506,28 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
                         output_feature['name']
                     )
                 )
+
+        if isinstance(output_feature[LOSS]['class_weights'], dict):
+            if (
+                    feature_metadata['str2idx'].keys() !=
+                    output_feature[LOSS]['class_weights'].keys()
+            ):
+                raise ValueError(
+                    'The class_weights keys ({}) are not compatible with '
+                    'the classes ({}) of feature {}. '
+                    'Check the metadata JSON file to see the classes '
+                    'and consider there needs to be a weight '
+                    'for the <UNK> class too.'.format(
+                        output_feature[LOSS]['class_weights'].keys(),
+                        feature_metadata['str2idx'].keys(),
+                        output_feature['name']
+                    )
+                )
+            else:
+                class_weights = output_feature[LOSS]['class_weights']
+                idx2str = feature_metadata['idx2str']
+                class_weights_list = [class_weights[s] for s in idx2str]
+                output_feature[LOSS]['class_weights'] = class_weights_list
 
         if output_feature[LOSS]['class_similarities_temperature'] > 0:
             if 'class_similarities' in output_feature[LOSS]:
@@ -606,7 +630,7 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
             result,
             metadata,
             experiment_dir_name,
-            skip_save_unprocessed_output=False
+            skip_save_unprocessed_output=False,
     ):
         postprocessed = {}
         npy_filename = os.path.join(experiment_dir_name, '{}_{}.npy')
@@ -631,11 +655,11 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
             probs = result[PROBABILITIES]
             prob = np.amax(probs, axis=1)
             postprocessed[PROBABILITIES] = probs
-            postprocessed['probability'] = prob
+            postprocessed[PROBABILITY] = prob
 
             if not skip_save_unprocessed_output:
                 np.save(npy_filename.format(name, PROBABILITIES), probs)
-                np.save(npy_filename.format(name, 'probability'), probs)
+                np.save(npy_filename.format(name, PROBABILITY), probs)
 
             del result[PROBABILITIES]
 
@@ -663,9 +687,12 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
 
     @staticmethod
     def populate_defaults(output_feature):
-        set_default_value(
-            output_feature,
-            LOSS,
+        # If Loss is not defined, set an empty dictionary
+        set_default_value(output_feature, LOSS, {})
+
+        # Populate the default values for LOSS if they aren't defined already
+        set_default_values(
+            output_feature[LOSS],
             {
                 'type': 'softmax_cross_entropy',
                 'sampler': None,
@@ -680,27 +707,32 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
                 'weight': 1
             }
         )
-        set_default_value(output_feature[LOSS], 'type', 'softmax_cross_entropy')
 
         if output_feature[LOSS]['type'] == 'sampled_softmax_cross_entropy':
-            set_default_value(output_feature[LOSS], 'sampler', 'log_uniform')
-            set_default_value(output_feature[LOSS], 'negative_samples', 25)
-            set_default_value(output_feature[LOSS], 'distortion', 0.75)
+            set_default_values(
+                output_feature[LOSS],
+                {
+                    'sampler': 'log_uniform',
+                    'negative_samples': 25,
+                    'distortion': 0.75
+                }
+            )
         else:
-            set_default_value(output_feature[LOSS], 'sampler', None)
-            set_default_value(output_feature[LOSS], 'negative_samples', 0)
-            set_default_value(output_feature[LOSS], 'distortion', 1)
+            set_default_values(
+                output_feature[LOSS],
+                {
+                    'sampler': None,
+                    'negative_samples': 0,
+                    'distortion': 1
+                }
+            )
 
-        set_default_value(output_feature[LOSS], 'unique', False)
-        set_default_value(output_feature[LOSS], 'labels_smoothing', 0)
-        set_default_value(output_feature[LOSS], 'class_weights', 1)
-        set_default_value(output_feature[LOSS], 'robust_lambda', 0)
-        set_default_value(output_feature[LOSS], 'confidence_penalty', 0)
-        set_default_value(output_feature[LOSS],
-                          'class_similarities_temperature', 0)
-        set_default_value(output_feature[LOSS], 'weight', 1)
-
-        set_default_value(output_feature, 'top_k', 3)
-        set_default_value(output_feature, 'dependencies', [])
-        set_default_value(output_feature, 'reduce_input', SUM)
-        set_default_value(output_feature, 'reduce_dependencies', SUM)
+        set_default_values(
+            output_feature,
+            {
+                'top_k': 3,
+                'dependencies': [],
+                'reduce_input': SUM,
+                'reduce_dependencies': SUM
+            }
+        )

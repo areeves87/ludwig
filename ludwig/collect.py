@@ -25,16 +25,17 @@ import sys
 
 import numpy as np
 
+from ludwig.constants import TEST, TRAINING, VALIDATION, FULL
 from ludwig.contrib import contrib_command
 from ludwig.data.preprocessing import preprocess_for_prediction
 from ludwig.globals import LUDWIG_VERSION
 from ludwig.globals import TRAIN_SET_METADATA_FILE_NAME
 from ludwig.models.model import load_model_and_definition
+from ludwig.utils.misc import find_non_existing_dir_by_adding_suffix
 from ludwig.utils.print_utils import logging_level_registry
 from ludwig.utils.print_utils import print_boxed
 from ludwig.utils.print_utils import print_ludwig
 from ludwig.utils.strings_utils import make_safe_filename
-
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ def collect_activations(
         tensors,
         data_csv=None,
         data_hdf5=None,
-        split='test',
+        split=TEST,
         batch_size=128,
         output_directory='results',
         gpus=None,
@@ -72,11 +73,7 @@ def collect_activations(
 
     """
     # setup directories and file names
-    experiment_dir_name = output_directory
-    suffix = 0
-    while os.path.exists(experiment_dir_name):
-        experiment_dir_name = output_directory + '_' + str(suffix)
-        suffix += 1
+    experiment_dir_name = find_non_existing_dir_by_adding_suffix(output_directory)
 
     logger.info('Dataset path: {}'.format(
         data_csv if data_csv is not None else data_hdf5)
@@ -114,7 +111,7 @@ def collect_activations(
     model.close_session()
 
     # saving
-    os.mkdir(experiment_dir_name)
+    os.makedirs(experiment_dir_name)
     save_tensors(collected_tensors, experiment_dir_name)
 
     logger.info('Saved to: {0}'.format(experiment_dir_name))
@@ -128,11 +125,7 @@ def collect_weights(
         **kwargs
 ):
     # setup directories and file names
-    experiment_dir_name = output_directory
-    suffix = 0
-    while os.path.exists(experiment_dir_name):
-        experiment_dir_name = output_directory + '_' + str(suffix)
-        suffix += 1
+    experiment_dir_name = find_non_existing_dir_by_adding_suffix(output_directory)
 
     logger.info('Model path: {}'.format(model_path))
     logger.info('Output path: {}'.format(experiment_dir_name))
@@ -146,7 +139,7 @@ def collect_weights(
     model.close_session()
 
     # saving
-    os.mkdir(experiment_dir_name)
+    os.makedirs(experiment_dir_name)
     save_tensors(collected_tensors, experiment_dir_name)
 
     logger.info('Saved to: {0}'.format(experiment_dir_name))
@@ -198,8 +191,8 @@ def cli_collect_activations(sys_argv):
     parser.add_argument(
         '-s',
         '--split',
-        default='test',
-        choices=['training', 'validation', 'test', 'full'],
+        default=TEST,
+        choices=[TRAINING, VALIDATION, TEST, FULL],
         help='the split to test the model on'
     )
 
@@ -279,6 +272,8 @@ def cli_collect_activations(sys_argv):
     logging.getLogger('ludwig').setLevel(
         logging_level_registry[args.logging_level]
     )
+    global logger
+    logger = logging.getLogger('ludwig.collect')
 
     print_ludwig('Collect Activations', LUDWIG_VERSION)
 
@@ -352,7 +347,11 @@ def cli_collect_weights(sys_argv):
     logging.getLogger('ludwig').setLevel(
         logging_level_registry[args.logging_level]
     )
+    global logger
+    logger = logging.getLogger('ludwig.collect')
+
     print_ludwig('Collect Weights', LUDWIG_VERSION)
+
     collect_weights(**vars(args))
 
 

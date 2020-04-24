@@ -41,7 +41,7 @@ def embedding_matrix(
                 pretrained_embeddings, vocab)
             if embeddings_matrix.shape[-1] != embedding_size:
                 raise ValueError(
-                    'The size of the pretrained embedding size is {}, '
+                    'The size of the pretrained embeddings is {}, '
                     'but the specified embedding_size is {}. '
                     'Please change the embedding_size accordingly.'.format(
                         embeddings_matrix.shape[-1],
@@ -64,14 +64,14 @@ def embedding_matrix(
                     {'type': 'uniform', 'minval': -1.0, 'maxval': 1.0})
             initializer_obj = initializer_obj_ref([vocab_size, embedding_size])
 
-        embeddings = tf.get_variable('embeddings',
+        embeddings = tf.compat.v1.get_variable('embeddings',
                                      initializer=initializer_obj,
                                      trainable=embeddings_trainable,
                                      regularizer=regularizer)
 
     elif representation == 'sparse':
         embedding_size = vocab_size
-        embeddings = tf.get_variable('embeddings',
+        embeddings = tf.compat.v1.get_variable('embeddings',
                                      initializer=get_initializer('identity')(
                                          [vocab_size, embedding_size]),
                                      trainable=False)
@@ -79,6 +79,46 @@ def embedding_matrix(
     else:
         raise Exception(
             'Embedding representation {} not supported.'.format(representation))
+
+    return embeddings, embedding_size
+
+
+def embedding_matrix_on_device(
+        vocab,
+        embedding_size,
+        regularizer,
+        representation='dense',
+        embeddings_trainable=True,
+        pretrained_embeddings=None,
+        force_embedding_size=False,
+        embeddings_on_cpu=False,
+        initializer=None
+):
+    if embeddings_on_cpu:
+        with tf.device('/cpu:0'):
+            embeddings, embedding_size = embedding_matrix(
+                vocab,
+                embedding_size,
+                representation=representation,
+                embeddings_trainable=embeddings_trainable,
+                pretrained_embeddings=pretrained_embeddings,
+                force_embedding_size=force_embedding_size,
+                initializer=initializer,
+                regularizer=regularizer
+            )
+    else:
+        embeddings, embedding_size = embedding_matrix(
+            vocab,
+            embedding_size,
+            representation=representation,
+            embeddings_trainable=embeddings_trainable,
+            pretrained_embeddings=pretrained_embeddings,
+            force_embedding_size=force_embedding_size,
+            initializer=initializer,
+            regularizer=regularizer
+        )
+
+    logger.debug('  embeddings: {0}'.format(embeddings))
 
     return embeddings, embedding_size
 
@@ -118,30 +158,17 @@ class Embed:
         if not self.regularize:
             regularizer = None
 
-        if self.embeddings_on_cpu:
-            with tf.device('/cpu:0'):
-                embeddings, embedding_size = embedding_matrix(
-                    self.vocab,
-                    self.embedding_size,
-                    representation=self.representation,
-                    embeddings_trainable=self.embeddings_trainable,
-                    pretrained_embeddings=self.pretrained_embeddings,
-                    force_embedding_size=self.force_embedding_size,
-                    initializer=self.initializer,
-                    regularizer=regularizer
-                )
-        else:
-            embeddings, embedding_size = embedding_matrix(
-                self.vocab,
-                self.embedding_size,
-                representation=self.representation,
-                embeddings_trainable=self.embeddings_trainable,
-                pretrained_embeddings=self.pretrained_embeddings,
-                force_embedding_size=self.force_embedding_size,
-                initializer=self.initializer,
-                regularizer=regularizer
-            )
-        logger.debug('  embeddings: {0}'.format(embeddings))
+        embeddings, embedding_size = embedding_matrix_on_device(
+            self.vocab,
+            self.embedding_size,
+            regularizer,
+            self.representation,
+            self.embeddings_trainable,
+            self.pretrained_embeddings,
+            self.force_embedding_size,
+            self.embeddings_on_cpu,
+            self.initializer
+        )
 
         embedded = tf.nn.embedding_lookup(embeddings, input_ids,
                                           name='embeddings_lookup')
@@ -190,30 +217,17 @@ class EmbedWeighted:
         if not self.regularize:
             regularizer = None
 
-        if self.embeddings_on_cpu:
-            with tf.device('/cpu:0'):
-                embeddings, embedding_size = embedding_matrix(
-                    self.vocab,
-                    self.embedding_size,
-                    representation=self.representation,
-                    embeddings_trainable=self.embeddings_trainable,
-                    pretrained_embeddings=self.pretrained_embeddings,
-                    force_embedding_size=self.force_embedding_size,
-                    initializer=self.initializer,
-                    regularizer=regularizer
-                )
-        else:
-            embeddings, embedding_size = embedding_matrix(
-                self.vocab,
-                self.embedding_size,
-                representation=self.representation,
-                embeddings_trainable=self.embeddings_trainable,
-                pretrained_embeddings=self.pretrained_embeddings,
-                force_embedding_size=self.force_embedding_size,
-                initializer=self.initializer,
-                regularizer=regularizer
-            )
-        logger.debug('  embeddings: {0}'.format(embeddings))
+        embeddings, embedding_size = embedding_matrix_on_device(
+            self.vocab,
+            self.embedding_size,
+            regularizer,
+            self.representation,
+            self.embeddings_trainable,
+            self.pretrained_embeddings,
+            self.force_embedding_size,
+            self.embeddings_on_cpu,
+            self.initializer
+        )
 
         signed_input = tf.cast(tf.sign(tf.abs(input_ids)), tf.int32)
         multiple_hot_indexes = tf.multiply(
@@ -280,30 +294,17 @@ class EmbedSparse:
         if not self.regularize:
             regularizer = None
 
-        if self.embeddings_on_cpu:
-            with tf.device('/cpu:0'):
-                embeddings, embedding_size = embedding_matrix(
-                    self.vocab,
-                    self.embedding_size,
-                    representation=self.representation,
-                    embeddings_trainable=self.embeddings_trainable,
-                    pretrained_embeddings=self.pretrained_embeddings,
-                    force_embedding_size=self.force_embedding_size,
-                    initializer=self.initializer,
-                    regularizer=regularizer
-                )
-        else:
-            embeddings, embedding_size = embedding_matrix(
-                self.vocab,
-                self.embedding_size,
-                representation=self.representation,
-                embeddings_trainable=self.embeddings_trainable,
-                pretrained_embeddings=self.pretrained_embeddings,
-                force_embedding_size=self.force_embedding_size,
-                initializer=self.initializer,
-                regularizer=regularizer
-            )
-        logger.debug('  embeddings: {0}'.format(embeddings))
+        embeddings, embedding_size = embedding_matrix_on_device(
+            self.vocab,
+            self.embedding_size,
+            regularizer,
+            self.representation,
+            self.embeddings_trainable,
+            self.pretrained_embeddings,
+            self.force_embedding_size,
+            self.embeddings_on_cpu,
+            self.initializer
+        )
 
         multiple_hot_indexes = tf.multiply(
             input_sparse,

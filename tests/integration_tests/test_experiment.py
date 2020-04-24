@@ -21,7 +21,7 @@ import pytest
 import yaml
 
 from ludwig.data.concatenate_datasets import concatenate_df
-from ludwig.experiment import experiment
+from ludwig.experiment import full_experiment
 from ludwig.features.h3_feature import h3_encoder_registry
 from ludwig.predict import full_predict
 from ludwig.utils.data_utils import read_csv
@@ -39,9 +39,11 @@ from tests.integration_tests.utils import sequence_feature
 from tests.integration_tests.utils import set_feature
 from tests.integration_tests.utils import text_feature
 from tests.integration_tests.utils import timeseries_feature
+from tests.integration_tests.utils import vector_feature
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+logging.getLogger("ludwig").setLevel(logging.INFO)
 
 
 def run_experiment(input_features, output_features, **kwargs):
@@ -73,10 +75,12 @@ def run_experiment(input_features, output_features, **kwargs):
         'skip_save_processed_input': True,
         'skip_save_progress': True,
         'skip_save_unprocessed_output': True,
+        'skip_save_model': True,
+        'skip_save_log': True
     }
     args.update(kwargs)
 
-    exp_dir_name = experiment(**args)
+    exp_dir_name = full_experiment(**args)
     shutil.rmtree(exp_dir_name, ignore_errors=True)
 
 
@@ -231,7 +235,8 @@ def test_experiment_image_inputs(csv_filename):
                 'in_memory': True,
                 'height': 8,
                 'width': 8,
-                'num_channels': 3
+                'num_channels': 3,
+                'num_processes': 5
             },
             fc_size=16,
             num_filters=8
@@ -255,7 +260,12 @@ def test_experiment_image_inputs(csv_filename):
     # Stacked CNN encoder, in_memory = False
     input_features[0]['preprocessing']['in_memory'] = False
     rel_path = generate_data(input_features, output_features, csv_filename)
-    run_experiment(input_features, output_features, data_csv=rel_path)
+    run_experiment(
+        input_features,
+        output_features,
+        data_csv=rel_path,
+        skip_save_processed_input=False,
+    )
 
     # Delete the temporary data created
     shutil.rmtree(image_dest_folder)
@@ -339,7 +349,10 @@ def test_experiment_sequence_combiner(csv_filename):
             max_len=5,
             encoder='rnn',
             cell_type='lstm',
-            reduce_output=None
+            reduce_output=None,
+            preprocessing={
+                'tokenizer': 'english_tokenize'
+            }
         ),
         sequence_feature(
             name='spanish',
@@ -347,7 +360,10 @@ def test_experiment_sequence_combiner(csv_filename):
             max_len=5,
             encoder='rnn',
             cell_type='lstm',
-            reduce_output=None
+            reduce_output=None,
+            preprocessing = {
+                'tokenizer': 'spanish_tokenize'
+            }
         ),
         category_feature(vocab_size=5)
     ]
@@ -381,7 +397,7 @@ def test_experiment_sequence_combiner(csv_filename):
 
         model_definition['input_features'] = input_features
 
-        exp_dir_name = experiment(
+        exp_dir_name = full_experiment(
             model_definition,
             skip_save_processed_input=False,
             skip_save_progress=True,
@@ -406,10 +422,10 @@ def test_experiment_model_resume(csv_filename):
         'training': {'epochs': 2}
     }
 
-    exp_dir_name = experiment(model_definition, data_csv=rel_path)
+    exp_dir_name = full_experiment(model_definition, data_csv=rel_path)
     logger.info('Experiment Directory: {0}'.format(exp_dir_name))
 
-    experiment(
+    full_experiment(
         model_definition,
         data_csv=rel_path,
         model_resume_path=exp_dir_name
@@ -452,7 +468,8 @@ def test_visual_question_answering(csv_filename):
                 'in_memory': True,
                 'height': 8,
                 'width': 8,
-                'num_channels': 3
+                'num_channels': 3,
+                'num_processes': 5
             },
             fc_size=8,
             num_filters=8
@@ -488,7 +505,8 @@ def test_image_resizing_num_channel_handling(csv_filename):
                 'in_memory': True,
                 'height': 8,
                 'width': 8,
-                'num_channels': 3
+                'num_channels': 3,
+                'num_processes': 5
             },
             fc_size=8,
             num_filters=8
@@ -546,6 +564,24 @@ def test_experiment_h3(csv_filename):
     for encoder in h3_encoder_registry:
         input_features[0]['encoder'] = encoder
         run_experiment(input_features, output_features, data_csv=rel_path)
+
+
+def test_experiment_vector_feature_1(csv_filename):
+    input_features = [vector_feature()]
+    output_features = [binary_feature()]
+    # Generate test data
+    rel_path = generate_data(input_features, output_features, csv_filename)
+
+    run_experiment(input_features, output_features, data_csv=rel_path)
+
+
+def test_experiment_vector_feature_2(csv_filename):
+    input_features = [vector_feature()]
+    output_features = [vector_feature()]
+    # Generate test data
+    rel_path = generate_data(input_features, output_features, csv_filename)
+
+    run_experiment(input_features, output_features, data_csv=rel_path)
 
 
 if __name__ == '__main__':

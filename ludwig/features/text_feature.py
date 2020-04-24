@@ -28,6 +28,7 @@ from ludwig.features.sequence_feature import SequenceOutputFeature
 from ludwig.utils.math_utils import softmax
 from ludwig.utils.metrics_utils import ConfusionMatrix
 from ludwig.utils.misc import set_default_value
+from ludwig.utils.misc import set_default_values
 from ludwig.utils.strings_utils import PADDING_SYMBOL
 from ludwig.utils.strings_utils import UNKNOWN_SYMBOL
 from ludwig.utils.strings_utils import build_sequence_matrix
@@ -196,7 +197,7 @@ class TextInputFeature(TextBaseFeature, SequenceInputFeature):
         self.encoder_obj = self.get_sequence_encoder(encoder_parameters)
 
     def _get_input_placeholder(self):
-        return tf.placeholder(
+        return tf.compat.v1.placeholder(
             tf.int32, shape=[None, None],
             name='{}_placeholder'.format(self.name)
         )
@@ -235,9 +236,14 @@ class TextInputFeature(TextBaseFeature, SequenceInputFeature):
 
     @staticmethod
     def populate_defaults(input_feature):
-        set_default_value(input_feature, 'tied_weights', None)
-        set_default_value(input_feature, 'encoder', 'parallel_cnn')
-        set_default_value(input_feature, 'level', 'word')
+        set_default_values(
+            input_feature,
+            {
+                'tied_weights': None,
+                'encoder': 'parallel_cnn',
+                'level': 'word'
+            }
+        )
 
 
 class TextOutputFeature(TextBaseFeature, SequenceOutputFeature):
@@ -261,7 +267,7 @@ class TextOutputFeature(TextBaseFeature, SequenceOutputFeature):
         self.decoder_obj = self.get_sequence_decoder(feature)
 
     def _get_output_placeholder(self):
-        return tf.placeholder(
+        return tf.compat.v1.placeholder(
             tf.int32,
             [None, self.max_sequence_length],
             name='{}_placeholder'.format(self.name)
@@ -272,6 +278,8 @@ class TextOutputFeature(TextBaseFeature, SequenceOutputFeature):
             hidden,
             hidden_size,
             regularizer=None,
+            dropout_rate=None,
+            is_training=None,
             **kwargs
     ):
         train_mean_loss, eval_loss, output_tensors = self.build_sequence_output(
@@ -425,8 +433,9 @@ class TextOutputFeature(TextBaseFeature, SequenceOutputFeature):
             result,
             metadata,
             experiment_dir_name,
-            skip_save_unprocessed_output=False
+            skip_save_unprocessed_output=False,
     ):
+        # todo: refactor to reuse SeuuqnceOutputFeature.postprocess_results
         postprocessed = {}
         npy_filename = os.path.join(experiment_dir_name, '{}_{}.npy')
         name = output_feature['name']
@@ -476,12 +485,16 @@ class TextOutputFeature(TextBaseFeature, SequenceOutputFeature):
                     probs = np.amax(probs, axis=-1)
                     prob = np.prod(probs, axis=-1)
 
-                postprocessed[PROBABILITIES] = probs
-                postprocessed['probability'] = prob
+                # commenting probabilities out because usually it is huge:
+                # dataset x length x classes
+                # todo: add a mechanism for letting the user decide to save it
+                # postprocessed[PROBABILITIES] = probs
+                postprocessed[PROBABILITY] = prob
 
                 if not skip_save_unprocessed_output:
-                    np.save(npy_filename.format(name, PROBABILITIES), probs)
-                    np.save(npy_filename.format(name, 'probability'), prob)
+                    # commenting probabilities out, see comment above
+                    # np.save(npy_filename.format(name, PROBABILITIES), probs)
+                    np.save(npy_filename.format(name, PROBABILITY), prob)
 
             del result[PROBABILITIES]
 
@@ -494,14 +507,14 @@ class TextOutputFeature(TextBaseFeature, SequenceOutputFeature):
     def populate_defaults(output_feature):
         set_default_value(output_feature, 'level', 'word')
 
-        set_default_value(
-            output_feature,
-            LOSS,
+        # If Loss is not defined, set an empty dictionary
+        set_default_value(output_feature, LOSS, {})
+
+        # Populate the default values for LOSS if they aren't defined already
+        set_default_values(
+            output_feature[LOSS],
             {
                 'type': 'softmax_cross_entropy',
-                'sampler': None,
-                'negative_samples': 0,
-                'distortion': 1,
                 'labels_smoothing': 0,
                 'class_weights': 1,
                 'robust_lambda': 0,
@@ -510,32 +523,37 @@ class TextOutputFeature(TextBaseFeature, SequenceOutputFeature):
                 'weight': 1
             }
         )
-        set_default_value(output_feature[LOSS], 'type', 'softmax_cross_entropy')
-        set_default_value(output_feature[LOSS], 'labels_smoothing', 0)
-        set_default_value(output_feature[LOSS], 'class_weights', 1)
-        set_default_value(output_feature[LOSS], 'robust_lambda', 0)
-        set_default_value(output_feature[LOSS], 'confidence_penalty', 0)
-        set_default_value(output_feature[LOSS],
-                          'class_similarities_temperature', 0)
-        set_default_value(output_feature[LOSS], 'weight', 1)
-        set_default_value(output_feature[LOSS], 'type', 'softmax_cross_entropy')
 
         if output_feature[LOSS]['type'] == 'sampled_softmax_cross_entropy':
-            set_default_value(output_feature[LOSS], 'sampler', 'log_uniform')
-            set_default_value(output_feature[LOSS], 'negative_samples', 25)
-            set_default_value(output_feature[LOSS], 'distortion', 0.75)
+            set_default_values(
+                output_feature[LOSS],
+                {
+                    'sampler': 'log_uniform',
+                    'negative_samples': 25,
+                    'distortion': 0.75
+                }
+            )
         else:
-            set_default_value(output_feature[LOSS], 'sampler', None)
-            set_default_value(output_feature[LOSS], 'negative_samples', 0)
-            set_default_value(output_feature[LOSS], 'distortion', 1)
+            set_default_values(
+                output_feature[LOSS],
+                {
+                    'sampler': None,
+                    'negative_samples': 0,
+                    'distortion': 1
+                }
+            )
 
         set_default_value(output_feature[LOSS], 'unique', False)
-
         set_default_value(output_feature, 'decoder', 'generator')
 
         if output_feature['decoder'] == 'tagger':
             set_default_value(output_feature, 'reduce_input', None)
 
-        set_default_value(output_feature, 'dependencies', [])
-        set_default_value(output_feature, 'reduce_input', SUM)
-        set_default_value(output_feature, 'reduce_dependencies', SUM)
+        set_default_values(
+            output_feature,
+            {
+                'dependencies': [],
+                'reduce_input': SUM,
+                'reduce_dependencies': SUM
+            }
+        )

@@ -6,7 +6,7 @@ Text Classification
 ===
 
 This example shows how to build a text classifier with Ludwig.
-It can be performed using the [Reuters-21578](http://boston.lti.cs.cmu.edu/classes/95-865-K/HW/HW2/reuters-allcats-6.zip) dataset, in particular the version available on [CMU's Text Analitycs course website](http://boston.lti.cs.cmu.edu/classes/95-865-K/HW/HW2/).
+It can be performed using the [Reuters-21578](http://boston.lti.cs.cmu.edu/classes/95-865-K/HW/HW2/reuters-allcats-6.zip) dataset, in particular the version available on [CMU's Text Analytics course website](http://boston.lti.cs.cmu.edu/classes/95-865-K/HW/HW2/).
 Other datasets available on the same webpage, like [OHSUMED](http://boston.lti.cs.cmu.edu/classes/95-865-K/HW/HW2/ohsumed-allcats-6.zip), is a well-known medical abstracts dataset, and [Epinions.com](http://boston.lti.cs.cmu.edu/classes/95-865-K/HW/HW2/epinions.zip), a dataset of product reviews, can be used too as the name of the columns is the same.
 
 
@@ -422,9 +422,10 @@ input_features:
         name: image_path_2
         type: image
         encoder: stacked_cnn
-        resize_image: true
-        width: 28
-        height: 28
+        preprocessing:
+          width: 28
+          height: 28
+          resize_image: true
         tied_weights: image_path_1
 
 combiner:
@@ -478,6 +479,100 @@ output_features:
         loss:
             type: sampled_softmax_cross_entropy
 ```
+
+Spoken Digit Speech Recognition
+===
+
+This is a complete example of training an spoken digit speech recognition model on the "MNIST dataset of speech recognition". 
+
+## Download the free spoken digit dataset.
+
+```
+git clone https://github.com/Jakobovski/free-spoken-digit-dataset.git
+mkdir speech_recog_digit_data
+cp -r free-spoken-digit-dataset/recordings speech_recog_digit_data
+cd speech_recog_digit_data
+```
+
+## Create an experiment CSV.
+
+```
+echo "audio_path","label" >> "spoken_digit.csv"
+cd "recordings"
+ls | while read -r file_name; do
+   audio_path=$(readlink -m "${file_name}")
+   label=$(echo ${file_name} | cut -c1)
+   echo "${audio_path},${label}" >> "../spoken_digit.csv"
+done
+cd "../"
+```
+
+Now you should have `spoken_digit.csv` containing 2000 examples having the following format
+
+| audio_path                                              |   label                                   |
+|---------------------------------------------------------|-------------------------------------------|
+| .../speech_recog_digit_data/recordings/0_jackson_0.wav  | 0                                         |
+| .../speech_recog_digit_data/recordings/0_jackson_10.wav | 0                                         |
+| .../speech_recog_digit_data/recordings/0_jackson_11.wav | 0                                         |
+| ...                                                     | ...                                       |
+| .../speech_recog_digit_data/recordings/1_jackson_0.wav  | 1                                         |
+
+
+## Train a model. 
+
+From the directory where you have virtual environment with ludwig installed: 
+
+```
+ludwig experiment \
+  --data_csv <PATH_TO_SPOKEN_DIGIT_CSV> \
+  --model_definition_file model_definition_file.yaml
+```
+
+With `model_definition.yaml`:
+
+```yaml
+input_features:
+    -
+        name: audio_path
+        type: audio
+        encoder: stacked_cnn
+        preprocessing:
+            audio_feature:
+                type: fbank
+                window_length_in_s: 0.025
+                window_shift_in_s: 0.01
+                num_filter_bands: 80
+            audio_file_length_limit_in_s: 1.0
+            norm: per_file
+        reduce_output: concat
+        conv_layers:
+            -
+                num_filters: 16
+                filter_size: 6
+                pool_size: 4
+                pool_stride: 4
+                dropout: true
+            -
+                num_filters: 32
+                filter_size: 3
+                pool_size: 2
+                pool_stride: 2
+                dropout: true
+        fc_layers:
+            -
+                fc_size: 64
+                dropout: true
+
+output_features:
+    -
+        name: label
+        type: category
+
+training:
+    dropout_rate: 0.4
+    early_stop: 10
+```
+
 
 Speaker Verification
 ===

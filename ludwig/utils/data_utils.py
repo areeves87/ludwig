@@ -21,11 +21,15 @@ import logging
 import os.path
 import pickle
 import random
+import re
 
 import h5py
 import numpy as np
 import pandas as pd
 from pandas.errors import ParserError
+from sklearn.model_selection import KFold
+
+from ludwig.constants import SPLIT
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +40,7 @@ def get_abs_path(data_csv_path, file_path):
     else:
         return file_path
 
+
 def load_csv(data_fp):
     data = []
     with open(data_fp, 'rb') as f:
@@ -43,20 +48,35 @@ def load_csv(data_fp):
     return data
 
 
-def read_csv(data_fp, header=0):
+def read_csv(data_fp, header=0, nrows=None, skiprows=None):
     """
     Helper method to read a csv file. Wraps around pd.read_csv to handle some
     exceptions. Can extend to cover cases as necessary
     :param data_fp: path to the csv file
     :param header: header argument for pandas to read the csv
+    :param nrows: number of rows to read from the csv, None means all
+    :param skiprows: number of rows to skip from the csv, None means no skips
     :return: Pandas dataframe with the data
     """
+
+    separator = ','
+    with open(data_fp, 'r', encoding="utf8") as csvfile:
+        try:
+            dialect = csv.Sniffer().sniff(csvfile.read(1024 * 100),
+                                          delimiters=[',', '\t', '|'])
+            separator = dialect.delimiter
+        except csv.Error:
+            # Could not conclude the delimiter, defaulting to comma
+            pass
+
     try:
-        df = pd.read_csv(data_fp, header=header)
+        df = pd.read_csv(data_fp, sep=separator, header=header,
+                         nrows=nrows, skiprows=skiprows)
     except ParserError:
         logger.warning('Failed to parse the CSV with pandas default way,'
                        ' trying \\ as escape character.')
-        df = pd.read_csv(data_fp, header=header, escapechar='\\')
+        df = pd.read_csv(data_fp, sep=separator, header=header, escapechar='\\',
+                         nrows=nrows, skiprows=skiprows)
 
     return df
 
@@ -69,6 +89,10 @@ def save_csv(data_fp, data):
                                                                        str):
                 row = [row]
             writer.writerow(row)
+
+
+def csv_contains_column(data_fp, column_name):
+    return column_name in read_csv(data_fp, nrows=0)  # only loads header
 
 
 def load_json(data_fp):
@@ -94,7 +118,7 @@ def load_hdf5(data_fp):
     data = {}
     with h5py.File(data_fp, 'r') as h5_file:
         for key in h5_file.keys():
-            data[key] = h5_file[key].value
+            data[key] = h5_file[key][()]
     return data
 
 
@@ -229,7 +253,7 @@ def shuffle_unison_inplace(list_of_lists, random_state=None):
     if list_of_lists:
         assert all(len(l) == len(list_of_lists[0]) for l in list_of_lists)
         if random_state is not None:
-            random_state.permutation(len(list_of_lists[0]))
+            p = random_state.permutation(len(list_of_lists[0]))
         else:
             p = np.random.permutation(len(list_of_lists[0]))
         return [l[p] for l in list_of_lists]
@@ -268,8 +292,8 @@ def shuffle_inplace(np_dict):
 
 
 def split_dataset_tvt(dataset, split):
-    if 'split' in dataset:
-        del dataset['split']
+    if SPLIT in dataset:
+        del dataset[SPLIT]
     training_set = split_dataset(dataset, split, value_to_split=0)
     validation_set = split_dataset(dataset, split, value_to_split=1)
     test_set = split_dataset(dataset, split, value_to_split=2)
@@ -314,8 +338,8 @@ def load_from_file(file_name, field=None, dtype=int, ground_truth_split=2):
     """
     if file_name.endswith('.hdf5') and field is not None:
         hdf5_data = h5py.File(file_name, 'r')
-        split = hdf5_data['split'].value
-        column = hdf5_data[field].value
+        split = hdf5_data[SPLIT][()]
+        column = hdf5_data[field][()]
         hdf5_data.close()
         array = column[split == ground_truth_split]  # ground truth
     elif file_name.endswith('.npy'):
@@ -326,20 +350,28 @@ def load_from_file(file_name, field=None, dtype=int, ground_truth_split=2):
         array = load_matrix(file_name, dtype)
     return array
 
-def replace_file_extension(file_path, desired_format):
+
+def replace_file_extension(file_path, extension):
     """
     Return a file path for a file with same name but different format.
     a.csv, json -> a.json
     a.csv, hdf5 -> a.hdf5
     :param file_path: original file path
-    :param desired_format: desired file format
+    :param extension: file extension
     :return: file path with same name but different format
     """
-    if '.' in desired_format:
+    if file_path is None:
+        return None
+    if '.' in extension:
         # Handle the case if the user calls with '.hdf5' instead of 'hdf5'
-        desired_format = desired_format.replace('.', '').strip()
+        extension = extension.replace('.', '').strip()
 
-    return os.path.splitext(file_path)[0] + '.' + desired_format
+    return os.path.splitext(file_path)[0] + '.' + extension
+
+
+def file_exists_with_diff_extension(file_path, extension):
+    return file_path is None or \
+           os.path.isfile(replace_file_extension(file_path, extension))
 
 
 def add_sequence_feature_column(df, col_name, seq_length):
@@ -353,7 +385,6 @@ def add_sequence_feature_column(df, col_name, seq_length):
     :param col_name: column name containing sequential data
     :param seq_length: length of an array of preceeding column values to use
     """
-
     if col_name not in df.columns.values:
         logger.error('{} column does not exist'.format(col_name))
         return
@@ -366,14 +397,26 @@ def add_sequence_feature_column(df, col_name, seq_length):
             )
         )
 
-    df[new_col_name] = np.nan
+    new_data = [None] * seq_length
+    old_data = np.array(df[col_name])
 
     for i in range(seq_length, len(df)):
-        df.iloc[i, df.columns.get_loc(new_col_name)] = ' '.join(
-            str(j) for j in list((df.iloc[i - seq_length: i][col_name]))
-        )
+        new_data.append(' '.join(
+            str(j) for j in old_data[i - seq_length: i]
+        ))
 
+    df[new_col_name] = new_data
     df[new_col_name] = df[new_col_name].fillna(method='backfill')
+
+
+def override_in_memory_flag(input_features, override_value):
+    num_overrides = 0
+    for feature in input_features:
+        if 'preprocessing' in feature:
+            if 'in_memory' in feature['preprocessing']:
+                feature['preprocessing']['in_memory'] = override_value
+                num_overrides += 1
+    return num_overrides
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -390,3 +433,35 @@ class NumpyEncoder(json.JSONEncoder):
             return obj.tolist()
         else:
             return json.JSONEncoder.default(self, obj)
+
+
+def generate_kfold_splits(data_df, num_folds, random_state):
+    kf = KFold(n_splits=num_folds, shuffle=True, random_state=random_state)
+    fold_num = 0
+    for train_indices, test_indices in kf.split(data_df):
+        fold_num += 1
+        yield train_indices, test_indices, fold_num
+
+
+def get_path_size(
+        start_path,
+        regex_accept=None,
+        regex_reject=None
+):
+    total_size = 0
+    pattern_accept = re.compile(regex_accept) if regex_accept else None
+    pattern_reject = re.compile(regex_reject) if regex_reject else None
+
+    for dirpath, dirnames, filenames in os.walk(start_path):
+        for filename in filenames:
+            filepath = os.path.join(dirpath, filename)
+            if not os.path.islink(filepath):
+                accepted = True
+                if pattern_accept:
+                    accepted = accepted and pattern_accept.match(filename)
+                if pattern_reject:
+                    accepted = accepted and not pattern_reject.match(filename)
+                if accepted:
+                    total_size += os.path.getsize(filepath)
+
+    return total_size
